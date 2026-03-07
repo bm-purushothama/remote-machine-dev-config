@@ -105,6 +105,12 @@ backup_configs() {
         backed_up=true
     fi
 
+    if [ -f "$HOME/.config/starship.toml" ]; then
+        cp "$HOME/.config/starship.toml" "$BACKUP_DIR/starship.toml"
+        success "Backed up starship.toml"
+        backed_up=true
+    fi
+
     if [ -d "$HOME/.local/share/nvim" ]; then
         info "Neovim data dir exists (will be cleaned for fresh install)"
         backed_up=true
@@ -294,6 +300,45 @@ install_deps() {
         pacman) eval "$PKG_INSTALL xclip" >> "$LOG_FILE" 2>&1 || true ;;
     esac
 
+    # ── Starship prompt ──────────────────────────────────────
+    if ! cmd_exists starship; then
+        info "Installing Starship prompt..."
+        curl -sS https://starship.rs/install.sh | sh -s -- --yes >> "$LOG_FILE" 2>&1 && \
+            success "Starship" || warn "Starship install failed — fallback prompt will be used"
+    else
+        success "Starship already installed: $(starship --version)"
+    fi
+
+    # ── Modern CLI tools (optional, enhance the experience) ──
+    info "Installing optional CLI tools (bat, eza, zoxide)..."
+    case "$PKG_MGR" in
+        apt)
+            eval "$PKG_INSTALL bat" >> "$LOG_FILE" 2>&1 || true
+            # eza: may need a PPA or cargo on older Ubuntu
+            eval "$PKG_INSTALL eza" >> "$LOG_FILE" 2>&1 || true
+            ;;
+        dnf)
+            eval "$PKG_INSTALL bat eza" >> "$LOG_FILE" 2>&1 || true
+            ;;
+        pacman)
+            eval "$PKG_INSTALL bat eza" >> "$LOG_FILE" 2>&1 || true
+            ;;
+        brew)
+            brew install bat eza >> "$LOG_FILE" 2>&1 || true
+            ;;
+        apk)
+            eval "$PKG_INSTALL bat" >> "$LOG_FILE" 2>&1 || true
+            ;;
+    esac
+
+    # zoxide (smart cd replacement)
+    if ! cmd_exists zoxide; then
+        curl -sS https://raw.githubusercontent.com/ajeetdsouza/zoxide/main/install.sh | bash >> "$LOG_FILE" 2>&1 && \
+            success "zoxide" || warn "zoxide install failed — cd will work normally"
+    else
+        success "zoxide already installed"
+    fi
+
     success "All dependencies installed"
 }
 
@@ -322,25 +367,25 @@ setup_shell_env() {
         info "Removed old devconfig block from $shell_rc"
     fi
 
-    cat >> "$shell_rc" << 'SHELLEOF'
-# >>> devconfig >>>
-# GNU Global: enable multi-language support via pygments
-export GTAGSLABEL=native-pygments
-
-# Add local pip binaries to PATH (for pygments etc.)
-export PATH="$HOME/.local/bin:$PATH"
-
-# Neovim as default editor
-export EDITOR=nvim
-export VISUAL=nvim
-
-# fzf defaults
-export FZF_DEFAULT_COMMAND='fd --type f --hidden --follow --exclude .git'
-export FZF_DEFAULT_OPTS='--height 40% --layout=reverse --border'
-# <<< devconfig <<<
+    # Source our bashrc from the user's shell rc
+    cat >> "$shell_rc" << SHELLEOF
+$marker
+# devconfig shell environment — do not edit this block
+[ -f "$SCRIPT_DIR/bashrc.bash" ] && source "$SCRIPT_DIR/bashrc.bash"
+$marker_end
 SHELLEOF
 
-    success "Shell environment configured in $shell_rc"
+    success "Shell rc updated: $shell_rc → sources bashrc.bash"
+
+    # Install Starship config
+    mkdir -p "$HOME/.config"
+    if [ -f "$HOME/.config/starship.toml" ]; then
+        cp "$HOME/.config/starship.toml" "$HOME/.config/starship.toml.bak"
+        info "Backed up existing starship.toml"
+    fi
+    cp "$SCRIPT_DIR/starship.toml" "$HOME/.config/starship.toml"
+    success "Installed starship.toml (Catppuccin Mocha theme)"
+
     info "Run ${BOLD}source $shell_rc${NC} or reconnect to apply"
 }
 
@@ -496,6 +541,10 @@ uninstall() {
     rm -rf "$HOME/.tmux/plugins"
     success "Removed tmux config and plugins"
 
+    # Remove starship config
+    rm -f "$HOME/.config/starship.toml"
+    success "Removed starship config"
+
     # Remove shell env block
     for rc in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile"; do
         if [ -f "$rc" ] && grep -q ">>> devconfig >>>" "$rc"; then
@@ -518,29 +567,45 @@ verify() {
 
     local all_ok=true
 
-    for tool in nvim tmux node npm rg ctags gtags fzf python3 git; do
+    for tool in nvim tmux node npm rg ctags gtags fzf python3 git starship; do
         if cmd_exists "$tool"; then
             success "$tool: $(command -v $tool)"
         else
-            warn "$tool: NOT FOUND"
-            all_ok=false
+            if [[ "$tool" == "starship" ]]; then
+                warn "$tool: NOT FOUND (fallback prompt will be used)"
+            else
+                warn "$tool: NOT FOUND"
+                all_ok=false
+            fi
+        fi
+    done
+
+    # Optional enhanced tools
+    echo ""
+    info "${BOLD}Optional tools:${NC}"
+    for tool in bat batcat eza zoxide; do
+        if cmd_exists "$tool"; then
+            success "  $tool: $(command -v $tool)"
         fi
     done
 
     # Check pygments
     if python3 -c "import pygments" 2>/dev/null; then
-        success "pygments: installed"
+        success "  pygments: installed"
     else
-        warn "pygments: NOT FOUND (gtags will be limited to C/C++/Java)"
+        warn "  pygments: NOT FOUND (gtags will be limited to C/C++/Java)"
         all_ok=false
     fi
 
     # Check configs
     echo ""
-    [ -f "$HOME/.tmux.conf" ]                && success "tmux.conf: present" || { warn "tmux.conf: MISSING"; all_ok=false; }
-    [ -f "$HOME/.config/nvim/init.lua" ]     && success "nvim config: present" || { warn "nvim config: MISSING"; all_ok=false; }
-    [ -d "$HOME/.tmux/plugins/tpm" ]         && success "TPM: installed" || { warn "TPM: MISSING"; all_ok=false; }
-    [ -d "$HOME/.cache/nvim/tags" ]          && success "Tags cache: ready" || { warn "Tags cache: MISSING"; all_ok=false; }
+    info "${BOLD}Config files:${NC}"
+    [ -f "$HOME/.tmux.conf" ]                && success "  tmux.conf: present"        || { warn "  tmux.conf: MISSING"; all_ok=false; }
+    [ -f "$HOME/.config/nvim/init.lua" ]     && success "  nvim config: present"      || { warn "  nvim config: MISSING"; all_ok=false; }
+    [ -d "$HOME/.tmux/plugins/tpm" ]         && success "  TPM: installed"            || { warn "  TPM: MISSING"; all_ok=false; }
+    [ -d "$HOME/.cache/nvim/tags" ]          && success "  Tags cache: ready"         || { warn "  Tags cache: MISSING"; all_ok=false; }
+    [ -f "$HOME/.config/starship.toml" ]     && success "  starship.toml: present"    || warn "  starship.toml: MISSING (optional)"
+    [ -f "$SCRIPT_DIR/bashrc.bash" ]         && success "  bashrc.bash: present"      || { warn "  bashrc.bash: MISSING"; all_ok=false; }
 
     # Check GTAGSLABEL
     echo ""
@@ -579,7 +644,8 @@ print_usage() {
     echo "  --deps        Install system dependencies only"
     echo "  --nvim        Install Neovim/NvChad config only"
     echo "  --tmux        Install tmux config only"
-    echo "  --shell       Configure shell environment only"
+    echo "  --bash        Install bashrc + starship config only"
+    echo "  --shell       Configure shell environment only (alias for --bash)"
     echo "  --verify      Verify installation"
     echo "  --uninstall   Remove everything (with backups)"
     echo "  --help        Show this help"
@@ -636,7 +702,7 @@ main() {
             backup_configs
             setup_tmux
             ;;
-        --shell)
+        --bash|--shell)
             setup_shell_env
             ;;
         --verify)
