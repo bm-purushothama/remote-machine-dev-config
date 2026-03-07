@@ -1,15 +1,22 @@
 #!/usr/bin/env bash
 # ╔══════════════════════════════════════════════════════════════╗
-# ║  devconfig — Automated Setup for Remote Dev Servers         ║
-# ║  NvChad v2.5 + tmux + gtags + smart-splits                 ║
+# ║  devconfig — Setup for Remote Dev Servers                   ║
+# ║  NvChad v2.5 + tmux + gtags + smart-splits + bashrc         ║
 # ╚══════════════════════════════════════════════════════════════╝
 #
+# NOTE: This script does NOT install system packages.
+#       It checks for required dependencies and fails with
+#       instructions if any are missing. Install them first
+#       using your system package manager.
+#
 # Usage:
-#   ./setup.sh              # Full install (interactive)
-#   ./setup.sh --all        # Full install (non-interactive, assume yes)
+#   ./setup.sh              # Full setup (interactive)
+#   ./setup.sh --all        # Full setup (non-interactive)
+#   ./setup.sh --check      # Only check dependencies
 #   ./setup.sh --nvim       # Only Neovim config
 #   ./setup.sh --tmux       # Only tmux config
-#   ./setup.sh --deps       # Only install dependencies
+#   ./setup.sh --bash       # Only bashrc + starship config
+#   ./setup.sh --verify     # Verify installation
 #   ./setup.sh --uninstall  # Remove everything (with backups)
 
 set -euo pipefail
@@ -21,6 +28,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 BOLD='\033[1m'
+DIM='\033[2m'
 NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -34,6 +42,7 @@ success() { echo -e "${GREEN}[  OK]${NC} $*"; }
 warn()    { echo -e "${YELLOW}[WARN]${NC} $*"; }
 error()   { echo -e "${RED}[FAIL]${NC} $*"; }
 step()    { echo -e "\n${CYAN}${BOLD}══ $* ══${NC}"; }
+hint()    { echo -e "        ${DIM}$*${NC}"; }
 
 log() { echo "[$(date '+%H:%M:%S')] $*" >> "$LOG_FILE"; }
 
@@ -47,40 +56,234 @@ confirm() {
 
 cmd_exists() { command -v "$1" &>/dev/null; }
 
-# ─── Detect OS / Package Manager ────────────────────────────
+# ─── Detect package manager (for hint messages only) ────────
 detect_pkg_manager() {
-    if cmd_exists apt-get; then
-        PKG_MGR="apt"
-        PKG_INSTALL="sudo apt-get install -y"
-        PKG_UPDATE="sudo apt-get update -qq"
-    elif cmd_exists dnf; then
-        PKG_MGR="dnf"
-        PKG_INSTALL="sudo dnf install -y"
-        PKG_UPDATE="sudo dnf check-update || true"
-    elif cmd_exists yum; then
-        PKG_MGR="yum"
-        PKG_INSTALL="sudo yum install -y"
-        PKG_UPDATE="true"
-    elif cmd_exists pacman; then
-        PKG_MGR="pacman"
-        PKG_INSTALL="sudo pacman -S --noconfirm"
-        PKG_UPDATE="sudo pacman -Sy"
-    elif cmd_exists brew; then
-        PKG_MGR="brew"
-        PKG_INSTALL="brew install"
-        PKG_UPDATE="brew update"
-    elif cmd_exists apk; then
-        PKG_MGR="apk"
-        PKG_INSTALL="sudo apk add"
-        PKG_UPDATE="sudo apk update"
-    else
-        error "No supported package manager found"
-        exit 1
+    if cmd_exists apt-get; then   PKG_MGR="apt"
+    elif cmd_exists dnf; then     PKG_MGR="dnf"
+    elif cmd_exists yum; then     PKG_MGR="yum"
+    elif cmd_exists pacman; then  PKG_MGR="pacman"
+    elif cmd_exists brew; then    PKG_MGR="brew"
+    elif cmd_exists apk; then     PKG_MGR="apk"
+    else                          PKG_MGR="unknown"
     fi
-    info "Detected package manager: ${BOLD}$PKG_MGR${NC}"
 }
 
-# ─── Backup existing configs ────────────────────────────────
+# Return the install command hint for a given package
+pkg_hint() {
+    local pkg="$1"
+    case "$PKG_MGR" in
+        apt)    echo "sudo apt install $pkg" ;;
+        dnf)    echo "sudo dnf install $pkg" ;;
+        yum)    echo "sudo yum install $pkg" ;;
+        pacman) echo "sudo pacman -S $pkg" ;;
+        brew)   echo "brew install $pkg" ;;
+        apk)    echo "sudo apk add $pkg" ;;
+        *)      echo "<your-pkg-manager> install $pkg" ;;
+    esac
+}
+
+# ═════════════════════════════════════════════════════════════
+#  DEPENDENCY CHECK — Does NOT install anything
+# ═════════════════════════════════════════════════════════════
+check_deps() {
+    step "Checking required dependencies"
+
+    detect_pkg_manager
+    info "Detected package manager: ${BOLD}$PKG_MGR${NC}"
+    echo ""
+
+    local missing_required=()
+    local missing_optional=()
+    local install_hints=()
+
+    # ── Required tools ───────────────────────────────────────
+    # Format: "command|package_name_apt|package_name_pacman|description"
+    declare -A REQUIRED_TOOLS=(
+        [git]="Core: version control"
+        [nvim]="Core: Neovim editor (>= 0.10)"
+        [tmux]="Core: terminal multiplexer (>= 3.2)"
+        [node]="Core: Node.js runtime (for LSP servers)"
+        [npm]="Core: Node package manager"
+        [python3]="Core: Python 3 (for pygments/gtags)"
+        [rg]="Search: ripgrep (fast recursive grep)"
+        [fzf]="Search: fuzzy finder"
+        [ctags]="Navigation: Universal Ctags (tag generation)"
+        [gtags]="Navigation: GNU Global (cross-reference indexing)"
+        [curl]="Core: HTTP client (for plugin downloads)"
+        [make]="Build: required for telescope-fzf-native"
+    )
+
+    # Package name mappings per package manager
+    declare -A PKG_NAMES_APT=(
+        [git]=git [nvim]=neovim [tmux]=tmux [node]=nodejs [npm]=npm
+        [python3]=python3 [rg]=ripgrep [fzf]=fzf [ctags]=universal-ctags
+        [gtags]=global [curl]=curl [make]=build-essential
+    )
+    declare -A PKG_NAMES_DNF=(
+        [git]=git [nvim]=neovim [tmux]=tmux [node]=nodejs [npm]=npm
+        [python3]=python3 [rg]=ripgrep [fzf]=fzf [ctags]=ctags
+        [gtags]=global-ctags [curl]=curl [make]=make
+    )
+    declare -A PKG_NAMES_PACMAN=(
+        [git]=git [nvim]=neovim [tmux]=tmux [node]=nodejs [npm]=npm
+        [python3]=python [rg]=ripgrep [fzf]=fzf [ctags]=ctags
+        [gtags]=global [curl]=curl [make]=base-devel
+    )
+    declare -A PKG_NAMES_BREW=(
+        [git]=git [nvim]=neovim [tmux]=tmux [node]=node [npm]=node
+        [python3]=python3 [rg]=ripgrep [fzf]=fzf [ctags]=universal-ctags
+        [gtags]=global [curl]=curl [make]=make
+    )
+
+    # Select the right mapping
+    local -n pkg_map
+    case "$PKG_MGR" in
+        apt)          pkg_map=PKG_NAMES_APT ;;
+        dnf|yum)      pkg_map=PKG_NAMES_DNF ;;
+        pacman)       pkg_map=PKG_NAMES_PACMAN ;;
+        brew)         pkg_map=PKG_NAMES_BREW ;;
+        *)            pkg_map=PKG_NAMES_APT ;;  # fallback
+    esac
+
+    info "${BOLD}Required:${NC}"
+    for tool in git curl make nvim tmux node npm python3 rg fzf ctags gtags; do
+        local desc="${REQUIRED_TOOLS[$tool]}"
+        if cmd_exists "$tool"; then
+            success "  $tool  ${DIM}($desc)${NC}"
+        else
+            error "  $tool  ${DIM}($desc)${NC}"
+            missing_required+=("$tool")
+            local pkg_name="${pkg_map[$tool]:-$tool}"
+            install_hints+=("$pkg_name")
+        fi
+    done
+
+    # ── fd (has different binary names) ──────────────────────
+    echo ""
+    if cmd_exists fd; then
+        success "  fd  ${DIM}(Search: fast file finder)${NC}"
+    elif cmd_exists fdfind; then
+        success "  fd  ${DIM}(Search: fast file finder — as 'fdfind')${NC}"
+    else
+        error "  fd  ${DIM}(Search: fast file finder)${NC}"
+        missing_required+=("fd")
+        case "$PKG_MGR" in
+            apt)    install_hints+=("fd-find") ;;
+            dnf)    install_hints+=("fd-find") ;;
+            pacman) install_hints+=("fd") ;;
+            brew)   install_hints+=("fd") ;;
+            *)      install_hints+=("fd-find") ;;
+        esac
+    fi
+
+    # ── Pygments (Python package) ────────────────────────────
+    if python3 -c "import pygments" 2>/dev/null; then
+        success "  pygments  ${DIM}(Python: multi-language gtags support)${NC}"
+    else
+        error "  pygments  ${DIM}(Python: multi-language gtags support)${NC}"
+        missing_required+=("pygments")
+    fi
+
+    # ── Optional tools ───────────────────────────────────────
+    echo ""
+    info "${BOLD}Optional (recommended):${NC}"
+
+    declare -A OPTIONAL_TOOLS=(
+        [starship]="Prompt: beautiful cross-shell prompt"
+        [bat]="Viewer: cat replacement with syntax highlighting"
+        [eza]="Listing: modern ls replacement with icons"
+        [zoxide]="Navigation: smart cd that learns your habits"
+    )
+
+    for tool in starship bat eza zoxide; do
+        local desc="${OPTIONAL_TOOLS[$tool]}"
+        if cmd_exists "$tool"; then
+            success "  $tool  ${DIM}($desc)${NC}"
+        else
+            # Also check alternative names
+            if [[ "$tool" == "bat" ]] && cmd_exists batcat; then
+                success "  bat  ${DIM}($desc — as 'batcat')${NC}"
+            else
+                warn "  $tool  ${DIM}($desc) — not found${NC}"
+                missing_optional+=("$tool")
+            fi
+        fi
+    done
+
+    # ── Report ───────────────────────────────────────────────
+    echo ""
+
+    if [[ ${#missing_required[@]} -gt 0 ]]; then
+        echo -e "${RED}${BOLD}════════════════════════════════════════════════════════${NC}"
+        error "${BOLD}Missing ${#missing_required[@]} required package(s): ${missing_required[*]}${NC}"
+        echo -e "${RED}${BOLD}════════════════════════════════════════════════════════${NC}"
+        echo ""
+        info "Install them using your package manager before running setup:"
+        echo ""
+
+        # Deduplicate install hints
+        local unique_pkgs
+        unique_pkgs=$(printf '%s\n' "${install_hints[@]}" | sort -u | tr '\n' ' ')
+
+        # Print the install command
+        case "$PKG_MGR" in
+            apt)    echo -e "  ${GREEN}sudo apt update && sudo apt install -y ${unique_pkgs}${NC}" ;;
+            dnf)    echo -e "  ${GREEN}sudo dnf install -y ${unique_pkgs}${NC}" ;;
+            yum)    echo -e "  ${GREEN}sudo yum install -y ${unique_pkgs}${NC}" ;;
+            pacman) echo -e "  ${GREEN}sudo pacman -S ${unique_pkgs}${NC}" ;;
+            brew)   echo -e "  ${GREEN}brew install ${unique_pkgs}${NC}" ;;
+            apk)    echo -e "  ${GREEN}sudo apk add ${unique_pkgs}${NC}" ;;
+            *)      echo -e "  ${GREEN}<pkg-manager> install ${unique_pkgs}${NC}" ;;
+        esac
+
+        # Pygments
+        if [[ " ${missing_required[*]} " =~ " pygments " ]]; then
+            echo ""
+            echo -e "  ${GREEN}pip3 install --user pygments${NC}"
+            hint "Or: python3 -m pip install --user pygments"
+        fi
+
+        echo ""
+        error "Setup cannot proceed until required dependencies are installed."
+        echo ""
+        return 1
+    fi
+
+    success "${BOLD}All required dependencies are present!${NC}"
+
+    if [[ ${#missing_optional[@]} -gt 0 ]]; then
+        echo ""
+        info "Optional tools you may want to install for the best experience:"
+        echo ""
+        for tool in "${missing_optional[@]}"; do
+            case "$tool" in
+                starship)
+                    echo -e "  ${GREEN}curl -sS https://starship.rs/install.sh | sh${NC}"
+                    hint "Beautiful prompt (bashrc falls back to built-in prompt without it)"
+                    ;;
+                bat)
+                    echo -e "  ${GREEN}$(pkg_hint bat)${NC}"
+                    hint "Syntax-highlighted cat replacement (used by fzf previews)"
+                    ;;
+                eza)
+                    echo -e "  ${GREEN}$(pkg_hint eza)${NC}"
+                    hint "Modern ls with icons and git integration"
+                    ;;
+                zoxide)
+                    echo -e "  ${GREEN}curl -sS https://raw.githubusercontent.com/ajeetdsouza/zoxide/main/install.sh | bash${NC}"
+                    hint "Smart cd that learns your frequently visited directories"
+                    ;;
+            esac
+        done
+        echo ""
+    fi
+
+    return 0
+}
+
+# ═════════════════════════════════════════════════════════════
+#  BACKUP
+# ═════════════════════════════════════════════════════════════
 backup_configs() {
     step "Backing up existing configs"
     mkdir -p "$BACKUP_DIR"
@@ -98,6 +301,7 @@ backup_configs() {
         success "Backed up ~/.tmux.conf"
         backed_up=true
     fi
+
     if [ -f "$HOME/.config/tmux/tmux.conf" ]; then
         mkdir -p "$BACKUP_DIR/tmux"
         cp "$HOME/.config/tmux/tmux.conf" "$BACKUP_DIR/tmux/tmux.conf"
@@ -125,225 +329,7 @@ backup_configs() {
 }
 
 # ═════════════════════════════════════════════════════════════
-#  DEPENDENCY INSTALLATION
-# ═════════════════════════════════════════════════════════════
-install_deps() {
-    step "Installing system dependencies"
-
-    detect_pkg_manager
-
-    info "Updating package index..."
-    eval "$PKG_UPDATE" >> "$LOG_FILE" 2>&1
-
-    # ── Core tools ───────────────────────────────────────────
-    local core_pkgs=""
-    case "$PKG_MGR" in
-        apt)
-            core_pkgs="git curl wget unzip build-essential"
-            ;;
-        dnf|yum)
-            core_pkgs="git curl wget unzip gcc gcc-c++ make"
-            ;;
-        pacman)
-            core_pkgs="git curl wget unzip base-devel"
-            ;;
-        brew)
-            core_pkgs="git curl wget"
-            ;;
-        apk)
-            core_pkgs="git curl wget unzip build-base"
-            ;;
-    esac
-
-    info "Installing core tools..."
-    eval "$PKG_INSTALL $core_pkgs" >> "$LOG_FILE" 2>&1 || warn "Some core packages may have failed"
-    success "Core tools"
-
-    # ── Neovim ───────────────────────────────────────────────
-    if ! cmd_exists nvim; then
-        info "Installing Neovim..."
-        case "$PKG_MGR" in
-            apt)
-                # Try snap for latest, fallback to apt
-                if cmd_exists snap; then
-                    sudo snap install nvim --classic >> "$LOG_FILE" 2>&1 && success "Neovim (via snap)" || {
-                        eval "$PKG_INSTALL neovim" >> "$LOG_FILE" 2>&1
-                        success "Neovim (via apt)"
-                    }
-                else
-                    # Download AppImage as fallback
-                    info "Installing Neovim AppImage..."
-                    curl -sLo /tmp/nvim.appimage "https://github.com/neovim/neovim/releases/latest/download/nvim.appimage" 2>> "$LOG_FILE"
-                    chmod u+x /tmp/nvim.appimage
-                    sudo mv /tmp/nvim.appimage /usr/local/bin/nvim
-                    success "Neovim (AppImage)"
-                fi
-                ;;
-            dnf)
-                eval "$PKG_INSTALL neovim" >> "$LOG_FILE" 2>&1
-                success "Neovim"
-                ;;
-            pacman)
-                eval "$PKG_INSTALL neovim" >> "$LOG_FILE" 2>&1
-                success "Neovim"
-                ;;
-            brew)
-                brew install neovim >> "$LOG_FILE" 2>&1
-                success "Neovim"
-                ;;
-            apk)
-                eval "$PKG_INSTALL neovim" >> "$LOG_FILE" 2>&1
-                success "Neovim"
-                ;;
-        esac
-    else
-        local nvim_ver
-        nvim_ver=$(nvim --version | head -1)
-        success "Neovim already installed: $nvim_ver"
-    fi
-
-    # ── tmux ─────────────────────────────────────────────────
-    if ! cmd_exists tmux; then
-        info "Installing tmux..."
-        case "$PKG_MGR" in
-            apt)    eval "$PKG_INSTALL tmux" >> "$LOG_FILE" 2>&1 ;;
-            dnf)    eval "$PKG_INSTALL tmux" >> "$LOG_FILE" 2>&1 ;;
-            pacman) eval "$PKG_INSTALL tmux" >> "$LOG_FILE" 2>&1 ;;
-            brew)   brew install tmux >> "$LOG_FILE" 2>&1 ;;
-            apk)    eval "$PKG_INSTALL tmux" >> "$LOG_FILE" 2>&1 ;;
-        esac
-        success "tmux"
-    else
-        success "tmux already installed: $(tmux -V)"
-    fi
-
-    # ── Search tools ─────────────────────────────────────────
-    local search_pkgs=""
-    case "$PKG_MGR" in
-        apt)    search_pkgs="ripgrep fd-find fzf" ;;
-        dnf)    search_pkgs="ripgrep fd-find fzf" ;;
-        pacman) search_pkgs="ripgrep fd fzf" ;;
-        brew)   search_pkgs="ripgrep fd fzf" ;;
-        apk)    search_pkgs="ripgrep fd fzf" ;;
-    esac
-
-    info "Installing search tools (ripgrep, fd, fzf)..."
-    eval "$PKG_INSTALL $search_pkgs" >> "$LOG_FILE" 2>&1 || warn "Some search tools may need manual install"
-    success "Search tools"
-
-    # ── Node.js (for LSP servers) ────────────────────────────
-    if ! cmd_exists node; then
-        info "Installing Node.js..."
-        if cmd_exists curl; then
-            curl -fsSL https://deb.nodesource.com/setup_lts.x 2>/dev/null | sudo -E bash - >> "$LOG_FILE" 2>&1
-            eval "$PKG_INSTALL nodejs" >> "$LOG_FILE" 2>&1
-        else
-            eval "$PKG_INSTALL nodejs npm" >> "$LOG_FILE" 2>&1
-        fi
-        success "Node.js"
-    else
-        success "Node.js already installed: $(node --version)"
-    fi
-
-    # ── Universal Ctags ──────────────────────────────────────
-    if ! cmd_exists ctags; then
-        info "Installing Universal Ctags..."
-        case "$PKG_MGR" in
-            apt)    eval "$PKG_INSTALL universal-ctags" >> "$LOG_FILE" 2>&1 ;;
-            dnf)    eval "$PKG_INSTALL ctags" >> "$LOG_FILE" 2>&1 ;;
-            pacman) eval "$PKG_INSTALL ctags" >> "$LOG_FILE" 2>&1 ;;
-            brew)   brew install universal-ctags >> "$LOG_FILE" 2>&1 ;;
-            apk)    eval "$PKG_INSTALL ctags" >> "$LOG_FILE" 2>&1 ;;
-        esac
-        success "Universal Ctags"
-    else
-        success "Ctags already installed"
-    fi
-
-    # ── GNU Global (gtags) ───────────────────────────────────
-    if ! cmd_exists gtags; then
-        info "Installing GNU Global (gtags)..."
-        case "$PKG_MGR" in
-            apt)    eval "$PKG_INSTALL global" >> "$LOG_FILE" 2>&1 ;;
-            dnf)    eval "$PKG_INSTALL global-ctags" >> "$LOG_FILE" 2>&1 ;;
-            pacman) eval "$PKG_INSTALL global" >> "$LOG_FILE" 2>&1 ;;
-            brew)   brew install global >> "$LOG_FILE" 2>&1 ;;
-            apk)    eval "$PKG_INSTALL global" >> "$LOG_FILE" 2>&1 ;;
-        esac
-        success "GNU Global"
-    else
-        success "GNU Global already installed: $(gtags --version | head -1)"
-    fi
-
-    # ── Python + Pygments (for multi-language gtags) ─────────
-    if ! cmd_exists python3; then
-        info "Installing Python3..."
-        case "$PKG_MGR" in
-            apt)    eval "$PKG_INSTALL python3 python3-pip python3-venv" >> "$LOG_FILE" 2>&1 ;;
-            dnf)    eval "$PKG_INSTALL python3 python3-pip" >> "$LOG_FILE" 2>&1 ;;
-            pacman) eval "$PKG_INSTALL python python-pip" >> "$LOG_FILE" 2>&1 ;;
-            brew)   brew install python >> "$LOG_FILE" 2>&1 ;;
-            apk)    eval "$PKG_INSTALL python3 py3-pip" >> "$LOG_FILE" 2>&1 ;;
-        esac
-    fi
-
-    info "Installing Pygments (multi-language gtags support)..."
-    python3 -m pip install --user --quiet pygments 2>> "$LOG_FILE" || \
-        pip3 install --user --quiet pygments 2>> "$LOG_FILE" || \
-        warn "Pygments install failed — gtags will only support C/C++/Java natively"
-    success "Python3 + Pygments"
-
-    # ── Clipboard (for SSH) ──────────────────────────────────
-    case "$PKG_MGR" in
-        apt)    eval "$PKG_INSTALL xclip" >> "$LOG_FILE" 2>&1 || true ;;
-        dnf)    eval "$PKG_INSTALL xclip" >> "$LOG_FILE" 2>&1 || true ;;
-        pacman) eval "$PKG_INSTALL xclip" >> "$LOG_FILE" 2>&1 || true ;;
-    esac
-
-    # ── Starship prompt ──────────────────────────────────────
-    if ! cmd_exists starship; then
-        info "Installing Starship prompt..."
-        curl -sS https://starship.rs/install.sh | sh -s -- --yes >> "$LOG_FILE" 2>&1 && \
-            success "Starship" || warn "Starship install failed — fallback prompt will be used"
-    else
-        success "Starship already installed: $(starship --version)"
-    fi
-
-    # ── Modern CLI tools (optional, enhance the experience) ──
-    info "Installing optional CLI tools (bat, eza, zoxide)..."
-    case "$PKG_MGR" in
-        apt)
-            eval "$PKG_INSTALL bat" >> "$LOG_FILE" 2>&1 || true
-            # eza: may need a PPA or cargo on older Ubuntu
-            eval "$PKG_INSTALL eza" >> "$LOG_FILE" 2>&1 || true
-            ;;
-        dnf)
-            eval "$PKG_INSTALL bat eza" >> "$LOG_FILE" 2>&1 || true
-            ;;
-        pacman)
-            eval "$PKG_INSTALL bat eza" >> "$LOG_FILE" 2>&1 || true
-            ;;
-        brew)
-            brew install bat eza >> "$LOG_FILE" 2>&1 || true
-            ;;
-        apk)
-            eval "$PKG_INSTALL bat" >> "$LOG_FILE" 2>&1 || true
-            ;;
-    esac
-
-    # zoxide (smart cd replacement)
-    if ! cmd_exists zoxide; then
-        curl -sS https://raw.githubusercontent.com/ajeetdsouza/zoxide/main/install.sh | bash >> "$LOG_FILE" 2>&1 && \
-            success "zoxide" || warn "zoxide install failed — cd will work normally"
-    else
-        success "zoxide already installed"
-    fi
-
-    success "All dependencies installed"
-}
-
-# ═════════════════════════════════════════════════════════════
-#  SHELL ENVIRONMENT
+#  SHELL / BASHRC SETUP
 # ═════════════════════════════════════════════════════════════
 setup_shell_env() {
     step "Configuring shell environment"
@@ -379,7 +365,7 @@ SHELLEOF
 
     # Install Starship config
     mkdir -p "$HOME/.config"
-    if [ -f "$HOME/.config/starship.toml" ]; then
+    if [ -f "$HOME/.config/starship.toml" ] && [ ! -f "$BACKUP_DIR/starship.toml" ] 2>/dev/null; then
         cp "$HOME/.config/starship.toml" "$HOME/.config/starship.toml.bak"
         info "Backed up existing starship.toml"
     fi
@@ -399,7 +385,7 @@ setup_tmux() {
     cp "$SCRIPT_DIR/tmux.conf" "$HOME/.tmux.conf"
     success "Installed tmux.conf"
 
-    # Install TPM (Tmux Plugin Manager)
+    # Install TPM
     local tpm_dir="$HOME/.tmux/plugins/tpm"
     if [ ! -d "$tpm_dir" ]; then
         info "Installing TPM (Tmux Plugin Manager)..."
@@ -413,26 +399,20 @@ setup_tmux() {
 
     # Install tmux plugins non-interactively
     info "Installing tmux plugins..."
-    info "  - tmux-sensible (sane defaults)"
-    info "  - tmux-yank (system clipboard over SSH/OSC52)"
-    info "  - tmux-resurrect (save/restore sessions)"
-    info "  - tmux-continuum (auto-save every 15min)"
-
-    # TPM's install script
     if [ -f "$tpm_dir/bin/install_plugins" ]; then
-        "$tpm_dir/bin/install_plugins" >> "$LOG_FILE" 2>&1 || warn "Plugin install needs tmux running; press prefix+I inside tmux"
+        "$tpm_dir/bin/install_plugins" >> "$LOG_FILE" 2>&1 || warn "Press ${BOLD}prefix + I${NC} inside tmux to install plugins"
         success "Tmux plugins installed"
     else
         warn "Start tmux and press ${BOLD}prefix + I${NC} (Ctrl-a, then I) to install plugins"
     fi
 
     echo ""
-    info "${BOLD}Tmux plugin summary:${NC}"
-    info "  ${GREEN}tpm${NC}              — Plugin manager (prefix+I to install, prefix+U to update)"
-    info "  ${GREEN}tmux-sensible${NC}    — UTF-8, larger history, better defaults"
-    info "  ${GREEN}tmux-yank${NC}        — Clipboard: copies to system clipboard (works over SSH via OSC52)"
-    info "  ${GREEN}tmux-resurrect${NC}   — Save sessions: prefix+Ctrl-s / Restore: prefix+Ctrl-r"
-    info "  ${GREEN}tmux-continuum${NC}   — Auto-saves every 15min, auto-restores on tmux start"
+    info "${BOLD}Tmux plugins:${NC}"
+    info "  ${GREEN}tpm${NC}              Plugin manager  (prefix+I install, prefix+U update)"
+    info "  ${GREEN}tmux-sensible${NC}    Sane defaults   (UTF-8, larger history, etc.)"
+    info "  ${GREEN}tmux-yank${NC}        Clipboard       (copies over SSH via OSC 52)"
+    info "  ${GREEN}tmux-resurrect${NC}   Sessions        (prefix+Ctrl-s save, prefix+Ctrl-r restore)"
+    info "  ${GREEN}tmux-continuum${NC}   Auto-save       (saves every 15min, auto-restores)"
 }
 
 # ═════════════════════════════════════════════════════════════
@@ -446,7 +426,7 @@ setup_nvim() {
     local nvim_state="$HOME/.local/state/nvim"
     local nvim_cache="$HOME/.cache/nvim"
 
-    # Clean previous installation
+    # Clean previous
     if [ -d "$nvim_config" ]; then
         info "Removing old Neovim config..."
         rm -rf "$nvim_config"
@@ -468,16 +448,13 @@ setup_nvim() {
     cp "$SCRIPT_DIR/nvim/init.lua"     "$nvim_config/init.lua"
     cp "$SCRIPT_DIR/nvim/.stylua.toml" "$nvim_config/.stylua.toml"
 
-    # lua/ files
     cp "$SCRIPT_DIR/nvim/lua/chadrc.lua"   "$nvim_config/lua/chadrc.lua"
     cp "$SCRIPT_DIR/nvim/lua/options.lua"   "$nvim_config/lua/options.lua"
     cp "$SCRIPT_DIR/nvim/lua/mappings.lua"  "$nvim_config/lua/mappings.lua"
 
-    # plugins/
     mkdir -p "$nvim_config/lua/plugins"
     cp "$SCRIPT_DIR/nvim/lua/plugins/init.lua" "$nvim_config/lua/plugins/init.lua"
 
-    # configs/
     mkdir -p "$nvim_config/lua/configs"
     for cfg in "$SCRIPT_DIR/nvim/lua/configs/"*.lua; do
         cp "$cfg" "$nvim_config/lua/configs/"
@@ -485,32 +462,32 @@ setup_nvim() {
 
     success "Custom config installed"
 
-    # Create tags cache directory
+    # Create tags cache
     mkdir -p "$HOME/.cache/nvim/tags"
     success "Tags cache directory created"
 
-    # Run headless Neovim to install plugins
+    # Install plugins headlessly
     info "Installing Neovim plugins (this may take 1-2 minutes)..."
     if nvim --headless "+Lazy! sync" +qa >> "$LOG_FILE" 2>&1; then
         success "Plugins installed via lazy.nvim"
     else
-        warn "Plugin install had issues — they will auto-install on first nvim launch"
+        warn "Plugins will auto-install on first nvim launch"
     fi
 
-    # Install Mason packages headlessly
-    info "Installing LSP servers, formatters, linters via Mason..."
+    # Mason packages
+    info "Queuing LSP servers, formatters, linters via Mason..."
     if nvim --headless "+MasonInstallAll" "+sleep 30" +qa >> "$LOG_FILE" 2>&1; then
-        success "Mason packages queued for installation"
+        success "Mason packages queued"
     else
-        info "Mason packages will install on first launch — run :MasonInstallAll in Neovim"
+        info "Run ${BOLD}:MasonInstallAll${NC} on first launch"
     fi
 
-    # Install treesitter parsers
+    # Treesitter parsers
     info "Installing Treesitter parsers..."
     if nvim --headless "+TSUpdateSync" +qa >> "$LOG_FILE" 2>&1; then
         success "Treesitter parsers installed"
     else
-        info "Treesitter parsers will install on first launch — run :TSUpdate in Neovim"
+        info "Run ${BOLD}:TSUpdate${NC} on first launch"
     fi
 }
 
@@ -520,32 +497,27 @@ setup_nvim() {
 uninstall() {
     step "Uninstalling devconfig"
 
-    warn "This will remove Neovim config, tmux config, and TPM."
+    warn "This will remove Neovim config, tmux config, bashrc integration, and TPM."
     if ! confirm "Are you sure?"; then
         info "Cancelled"
         exit 0
     fi
 
-    # Backup first
     backup_configs
 
-    # Remove nvim
     rm -rf "$HOME/.config/nvim"
     rm -rf "$HOME/.local/share/nvim"
     rm -rf "$HOME/.local/state/nvim"
     rm -rf "$HOME/.cache/nvim"
     success "Removed Neovim config and data"
 
-    # Remove tmux
     rm -f "$HOME/.tmux.conf"
     rm -rf "$HOME/.tmux/plugins"
     success "Removed tmux config and plugins"
 
-    # Remove starship config
     rm -f "$HOME/.config/starship.toml"
     success "Removed starship config"
 
-    # Remove shell env block
     for rc in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile"; do
         if [ -f "$rc" ] && grep -q ">>> devconfig >>>" "$rc"; then
             sed -i '/>>> devconfig >>>/,/<<< devconfig <<</d' "$rc"
@@ -555,49 +527,53 @@ uninstall() {
 
     echo ""
     success "Uninstall complete. Backups are in: $BACKUP_DIR"
-    info "System packages (neovim, tmux, ctags, global, etc.) were NOT removed."
-    info "Remove them manually if desired."
+    info "System packages (neovim, tmux, ctags, etc.) were NOT removed."
 }
 
 # ═════════════════════════════════════════════════════════════
-#  VERIFY INSTALLATION
+#  VERIFY
 # ═════════════════════════════════════════════════════════════
 verify() {
     step "Verifying installation"
 
     local all_ok=true
 
-    for tool in nvim tmux node npm rg ctags gtags fzf python3 git starship; do
+    info "${BOLD}Tools:${NC}"
+    for tool in nvim tmux node npm rg ctags gtags fzf python3 git; do
         if cmd_exists "$tool"; then
-            success "$tool: $(command -v $tool)"
+            success "  $tool: $(command -v "$tool")"
         else
-            if [[ "$tool" == "starship" ]]; then
-                warn "$tool: NOT FOUND (fallback prompt will be used)"
-            else
-                warn "$tool: NOT FOUND"
-                all_ok=false
-            fi
+            warn "  $tool: NOT FOUND"
+            all_ok=false
         fi
     done
 
-    # Optional enhanced tools
-    echo ""
-    info "${BOLD}Optional tools:${NC}"
-    for tool in bat batcat eza zoxide; do
-        if cmd_exists "$tool"; then
-            success "  $tool: $(command -v $tool)"
-        fi
-    done
-
-    # Check pygments
-    if python3 -c "import pygments" 2>/dev/null; then
-        success "  pygments: installed"
+    # fd check
+    if cmd_exists fd; then
+        success "  fd: $(command -v fd)"
+    elif cmd_exists fdfind; then
+        success "  fd: $(command -v fdfind) (as fdfind)"
     else
-        warn "  pygments: NOT FOUND (gtags will be limited to C/C++/Java)"
+        warn "  fd: NOT FOUND"
         all_ok=false
     fi
 
-    # Check configs
+    # Optional
+    echo ""
+    info "${BOLD}Optional tools:${NC}"
+    for tool in starship bat batcat eza zoxide; do
+        cmd_exists "$tool" && success "  $tool: $(command -v "$tool")"
+    done
+
+    # Pygments
+    if python3 -c "import pygments" 2>/dev/null; then
+        success "  pygments: installed"
+    else
+        warn "  pygments: NOT FOUND (gtags limited to C/C++/Java)"
+        all_ok=false
+    fi
+
+    # Config files
     echo ""
     info "${BOLD}Config files:${NC}"
     [ -f "$HOME/.tmux.conf" ]                && success "  tmux.conf: present"        || { warn "  tmux.conf: MISSING"; all_ok=false; }
@@ -607,12 +583,12 @@ verify() {
     [ -f "$HOME/.config/starship.toml" ]     && success "  starship.toml: present"    || warn "  starship.toml: MISSING (optional)"
     [ -f "$SCRIPT_DIR/bashrc.bash" ]         && success "  bashrc.bash: present"      || { warn "  bashrc.bash: MISSING"; all_ok=false; }
 
-    # Check GTAGSLABEL
+    # GTAGSLABEL
     echo ""
     if [ "${GTAGSLABEL:-}" = "native-pygments" ]; then
         success "GTAGSLABEL=native-pygments (multi-language gtags active)"
     else
-        warn "GTAGSLABEL not set — run: source ~/.bashrc (or ~/.zshrc)"
+        warn "GTAGSLABEL not set — run: ${BOLD}source ~/.bashrc${NC}"
     fi
 
     echo ""
@@ -639,21 +615,29 @@ print_usage() {
     echo "Usage: $0 [option]"
     echo ""
     echo "Options:"
-    echo "  (none)        Interactive full install"
-    echo "  --all         Non-interactive full install"
-    echo "  --deps        Install system dependencies only"
-    echo "  --nvim        Install Neovim/NvChad config only"
-    echo "  --tmux        Install tmux config only"
-    echo "  --bash        Install bashrc + starship config only"
-    echo "  --shell       Configure shell environment only (alias for --bash)"
-    echo "  --verify      Verify installation"
+    echo "  (none)        Interactive full setup"
+    echo "  --all         Non-interactive full setup"
+    echo "  --check       Check dependencies only (install nothing)"
+    echo "  --nvim        Setup Neovim/NvChad config only"
+    echo "  --tmux        Setup tmux config only"
+    echo "  --bash        Setup bashrc + starship config only"
+    echo "  --verify      Verify existing installation"
     echo "  --uninstall   Remove everything (with backups)"
     echo "  --help        Show this help"
+    echo ""
+    echo "This script does NOT install system packages."
+    echo "Run --check first to see what's needed."
 }
 
-full_install() {
+full_setup() {
+    # Check deps first — abort if missing
+    if ! check_deps; then
+        echo ""
+        error "Aborting setup. Install the missing packages above and re-run."
+        exit 1
+    fi
+
     backup_configs
-    install_deps
     setup_shell_env
     setup_tmux
     setup_nvim
@@ -663,9 +647,9 @@ full_install() {
     step "Setup Complete!"
     echo ""
     info "Next steps:"
-    info "  1. ${BOLD}source ~/.bashrc${NC}  (or ~/.zshrc) to load env vars"
+    info "  1. ${BOLD}source ~/.bashrc${NC}  (or ~/.zshrc) to load shell config"
     info "  2. ${BOLD}tmux${NC}             start tmux"
-    info "  3. ${BOLD}nvim${NC}             launch Neovim (plugins auto-install)"
+    info "  3. ${BOLD}nvim${NC}             launch Neovim"
     info "  4. Inside tmux: ${BOLD}prefix + I${NC} to install tmux plugins"
     info "  5. Inside nvim:  ${BOLD}:MasonInstallAll${NC} if tools didn't auto-install"
     echo ""
@@ -689,16 +673,18 @@ main() {
     case "${1:-}" in
         --all)
             AUTO_YES=true
-            full_install
+            full_setup
             ;;
-        --deps)
-            install_deps
+        --check)
+            check_deps
             ;;
         --nvim)
+            if ! check_deps; then exit 1; fi
             backup_configs
             setup_nvim
             ;;
         --tmux)
+            if ! check_deps; then exit 1; fi
             backup_configs
             setup_tmux
             ;;
@@ -715,8 +701,8 @@ main() {
             print_usage
             ;;
         "")
-            if confirm "Install everything (dependencies + tmux + Neovim)?"; then
-                full_install
+            if confirm "Setup everything (tmux + Neovim + bashrc)?"; then
+                full_setup
             else
                 echo ""
                 print_usage

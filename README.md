@@ -5,29 +5,76 @@ Developer environment for remote servers — Neovim (NvChad v2.5) + tmux, optimi
 ## One-line install
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/devconfig.git ~/.devconfig
+git clone git@github.com:bm-purushothama/remote-machine-dev-config.git ~/.devconfig
 cd ~/.devconfig && chmod +x setup.sh && ./setup.sh
 ```
 
-Non-interactive (e.g. in a provisioning script):
+Non-interactive:
 ```bash
 ./setup.sh --all
 ```
 
-## What gets installed
+## Prerequisites — Install these FIRST
 
-### System dependencies (via apt/dnf/pacman/brew)
-| Tool | Purpose |
-|------|---------|
-| neovim | Editor (0.10+) |
-| tmux | Terminal multiplexer (3.4+) |
-| universal-ctags | Tag generation for code navigation |
-| GNU Global (gtags) | Cross-reference indexing (callers, callees, symbols) |
-| pygments | Multi-language support for gtags (Python, JS, Rust, Go...) |
-| ripgrep | Fast recursive grep |
-| fd | Fast file finder |
-| fzf | Fuzzy finder binary |
-| Node.js | LSP server runtime |
+The setup script **does not install system packages**. It checks for them
+and fails with the exact install command you need if anything is missing.
+
+Run `./setup.sh --check` to see what you need.
+
+### Ubuntu / Debian
+```bash
+sudo apt update && sudo apt install -y \
+  git curl neovim tmux nodejs npm python3 python3-pip \
+  ripgrep fd-find fzf universal-ctags global build-essential
+
+pip3 install --user pygments
+```
+
+### Fedora / RHEL
+```bash
+sudo dnf install -y \
+  git curl neovim tmux nodejs npm python3 python3-pip \
+  ripgrep fd-find fzf ctags global-ctags make
+
+pip3 install --user pygments
+```
+
+### Arch Linux
+```bash
+sudo pacman -S \
+  git curl neovim tmux nodejs npm python python-pip \
+  ripgrep fd fzf ctags global base-devel
+
+pip install --user pygments
+```
+
+### macOS (Homebrew)
+```bash
+brew install \
+  git curl neovim tmux node python3 \
+  ripgrep fd fzf universal-ctags global make
+
+pip3 install pygments
+```
+
+### Optional (recommended)
+```bash
+# Beautiful prompt
+curl -sS https://starship.rs/install.sh | sh
+
+# Better cat (syntax highlighting)
+sudo apt install bat       # or: brew install bat
+
+# Better ls (icons + git)
+sudo apt install eza       # or: brew install eza
+
+# Smart cd (learns your dirs)
+curl -sS https://raw.githubusercontent.com/ajeetdsouza/zoxide/main/install.sh | bash
+```
+
+### Font
+Install a **Nerd Font** on your LOCAL machine (the terminal emulator).
+Recommended: [JetBrains Mono Nerd Font](https://www.nerdfonts.com/).
 
 ### tmux plugins (via TPM)
 | Plugin | Purpose | Key bindings |
@@ -69,15 +116,18 @@ devconfig/
 ## setup.sh options
 
 ```
-./setup.sh              # Interactive full install
-./setup.sh --all        # Non-interactive full install
-./setup.sh --deps       # Install system dependencies only
-./setup.sh --nvim       # Install Neovim config only
-./setup.sh --tmux       # Install tmux config only
-./setup.sh --shell      # Configure shell environment only
-./setup.sh --verify     # Check everything is working
+./setup.sh              # Interactive full setup (checks deps first)
+./setup.sh --all        # Non-interactive full setup
+./setup.sh --check      # Check dependencies only — install nothing
+./setup.sh --nvim       # Setup Neovim config only
+./setup.sh --tmux       # Setup tmux config only
+./setup.sh --bash       # Setup bashrc + starship config only
+./setup.sh --verify     # Check existing installation health
 ./setup.sh --uninstall  # Remove everything (backs up first)
 ```
+
+**The script never installs system packages.** It checks for required
+dependencies and aborts with exact install commands if anything is missing.
 
 ## Key bindings
 
