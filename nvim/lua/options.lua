@@ -40,7 +40,7 @@ opt.showmode       = false
 opt.cmdheight      = 1
 opt.pumheight      = 15
 opt.laststatus     = 3           -- Global statusline
-opt.fillchars      = { eob = " ", fold = " ", foldopen = "", foldsep = " ", foldclose = "" }
+opt.fillchars      = { eob = " ", fold = " ", foldopen = "▾", foldsep = "│", foldclose = "▸" }
 opt.smoothscroll   = true        -- Neovim 0.10+
 
 -- ── Performance (tuned for remote / SSH) ────────────────────
