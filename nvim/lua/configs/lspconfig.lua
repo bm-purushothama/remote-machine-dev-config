@@ -1,10 +1,5 @@
 -- ~/.config/nvim/lua/configs/lspconfig.lua
--- Per-server LSP configuration
-
-local on_attach    = require("nvchad.configs.lspconfig").on_attach
-local on_init      = require("nvchad.configs.lspconfig").on_init
-local capabilities = require("nvchad.configs.lspconfig").capabilities
-local lspconfig    = require("lspconfig")
+-- LSP configuration using vim.lsp.config (Neovim 0.11+)
 
 -- ── Diagnostic appearance ───────────────────────────────────
 vim.diagnostic.config({
@@ -27,32 +22,41 @@ for type, icon in pairs(signs) do
   vim.fn.sign_define(hl, { text = icon, texthl = hl, numhl = "" })
 end
 
--- ── Default-config servers (just attach & go) ───────────────
-local default_servers = {
-  "html",
-  "cssls",
-  "tailwindcss",
-  "jsonls",
-  "yamlls",
-  "bashls",
-  "dockerls",
-  "terraformls",
-  "clangd",
-}
-
-for _, server in ipairs(default_servers) do
-  lspconfig[server].setup({
-    on_attach    = on_attach,
-    on_init      = on_init,
-    capabilities = capabilities,
-  })
+-- ── Shared capabilities (nvim-cmp integration) ─────────────
+local capabilities = vim.lsp.protocol.make_client_capabilities()
+local ok_cmp, cmp_lsp = pcall(require, "cmp_nvim_lsp")
+if ok_cmp then
+  capabilities = vim.tbl_deep_extend("force", capabilities, cmp_lsp.default_capabilities())
 end
 
--- ── TypeScript ──────────────────────────────────────────────
-lspconfig.ts_ls.setup({
-  on_attach    = on_attach,
-  on_init      = on_init,
+-- ── Shared on_attach ────────────────────────────────────────
+local on_attach = function(client, bufnr)
+  -- Enable navic breadcrumbs if supported
+  local ok_navic, navic = pcall(require, "nvim-navic")
+  if ok_navic and client.server_capabilities.documentSymbolProvider then
+    navic.attach(client, bufnr)
+  end
+end
+
+-- ── Wildcard: default config for ALL servers ────────────────
+vim.lsp.config("*", {
   capabilities = capabilities,
+  on_attach = on_attach,
+})
+
+-- ── Default-config servers (just enable, no special settings)
+vim.lsp.config("html", {})
+vim.lsp.config("cssls", {})
+vim.lsp.config("tailwindcss", {})
+vim.lsp.config("jsonls", {})
+vim.lsp.config("yamlls", {})
+vim.lsp.config("bashls", {})
+vim.lsp.config("dockerls", {})
+vim.lsp.config("terraformls", {})
+vim.lsp.config("clangd", {})
+
+-- ── TypeScript ──────────────────────────────────────────────
+vim.lsp.config("ts_ls", {
   settings = {
     typescript = {
       inlayHints = {
@@ -72,10 +76,7 @@ lspconfig.ts_ls.setup({
 })
 
 -- ── Python (Pyright) ────────────────────────────────────────
-lspconfig.pyright.setup({
-  on_attach    = on_attach,
-  on_init      = on_init,
-  capabilities = capabilities,
+vim.lsp.config("pyright", {
   settings = {
     python = {
       analysis = {
@@ -90,10 +91,7 @@ lspconfig.pyright.setup({
 })
 
 -- ── Rust Analyzer ───────────────────────────────────────────
-lspconfig.rust_analyzer.setup({
-  on_attach    = on_attach,
-  on_init      = on_init,
-  capabilities = capabilities,
+vim.lsp.config("rust_analyzer", {
   settings = {
     ["rust-analyzer"] = {
       cargo = {
@@ -103,19 +101,16 @@ lspconfig.rust_analyzer.setup({
       checkOnSave = { command = "clippy" },
       procMacro   = { enable = true },
       inlayHints  = {
-        bindingModeHints     = { enable = true },
+        bindingModeHints       = { enable = true },
         closureReturnTypeHints = { enable = "always" },
-        lifetimeElisionHints = { enable = "always" },
+        lifetimeElisionHints   = { enable = "always" },
       },
     },
   },
 })
 
 -- ── Go (gopls) ──────────────────────────────────────────────
-lspconfig.gopls.setup({
-  on_attach    = on_attach,
-  on_init      = on_init,
-  capabilities = capabilities,
+vim.lsp.config("gopls", {
   settings = {
     gopls = {
       gofumpt    = true,
@@ -140,10 +135,7 @@ lspconfig.gopls.setup({
 })
 
 -- ── Lua ─────────────────────────────────────────────────────
-lspconfig.lua_ls.setup({
-  on_attach    = on_attach,
-  on_init      = on_init,
-  capabilities = capabilities,
+vim.lsp.config("lua_ls", {
   settings = {
     Lua = {
       runtime     = { version = "LuaJIT" },
@@ -154,11 +146,29 @@ lspconfig.lua_ls.setup({
           vim.fn.stdpath("data") .. "/lazy/ui/nvchad_types",
           vim.fn.stdpath("data") .. "/lazy/lazy.nvim/lua/lazy",
         },
-        maxPreload    = 100000,
+        maxPreload      = 100000,
         preloadFileSize = 10000,
       },
       telemetry = { enable = false },
       hint      = { enable = true },
     },
   },
+})
+
+-- ── Enable all configured servers ───────────────────────────
+vim.lsp.enable({
+  "html",
+  "cssls",
+  "tailwindcss",
+  "jsonls",
+  "yamlls",
+  "bashls",
+  "dockerls",
+  "terraformls",
+  "clangd",
+  "ts_ls",
+  "pyright",
+  "rust_analyzer",
+  "gopls",
+  "lua_ls",
 })

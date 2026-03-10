@@ -39,7 +39,7 @@ return {
     "neovim/nvim-lspconfig",
     event = { "BufReadPre", "BufNewFile" },
     config = function()
-      require("nvchad.configs.lspconfig").defaults()
+      -- using vim.lsp.config (nvim 0.11+)
       require("configs.lspconfig")
     end,
   },
